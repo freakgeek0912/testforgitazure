@@ -1,0 +1,265 @@
+import parquet.column.page.PageReadStore
+import parquet.example.data.Group
+import parquet.example.data.simple.convert.GroupRecordConverter
+import parquet.hadoop.example.GroupReadSupport
+import parquet.hadoop.metadata.ParquetMetadata
+import parquet.hadoop.ParquetFileReader
+import parquet.hadoop.ParquetReader
+import parquet.io.ColumnIOFactory
+import parquet.io.MessageColumnIO
+import parquet.io.RecordReader
+import parquet.Log
+import parquet.Preconditions
+import parquet.schema.MessageType
+import parquet.schema.MessageTypeParser
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.Path
+ 
+import java.io.IOException
+import java.io.Closeable
+import java.io.FileReader
+import java.io.FileWriter
+import org.apache.hadoop.fs.Path
+import java.io.BufferedReader
+import java.io.BufferedWriter
+import java.io.FileOutputStream
+import java.io.File
+import org.apache.spark.input.PortableDataStream
+import java.util.zip.ZipInputStream
+import java.io.ByteArrayOutputStream
+import scala.collection.mutable.MutableList
+case class ArrayentRecord(
+deviceId: Int,
+timestamp: Long,
+tenantName: String,
+groupName: String,
+subgroupName: String,
+eventType: String,
+eventSource: String,
+deviceTypeName: String,
+attributes: Map[String, String],
+event: String
+)
+ 
+object ZIPFilesUtil {
+   
+def closeQuietly(res: Closeable) {
+     try {
+       if (res != null) {
+         res.close()
+       }
+     } catch {
+       case ioe: IOException => println("Exception closing reader " + res + ": " + ioe.getMessage)
+     }
+   }
+ 
+def convertGroup(r:Group): ArrayentRecord = {
+var attributes = scala.collection.mutable.Map[String, String]()
+ 
+val ag = r.getGroup(8,0) // special treat attributes map
+for (i <- 0 to ag.getFieldRepetitionCount(0) - 1)
+{ val gg = ag.getGroup(0,i)
+  attributes += (gg.getString(0,0) -> gg.getString(1,0))
+}
+   
+new ArrayentRecord(
+r.getInteger(0,0), // device id
+r.getLong(1,0), // timestamp
+r.getString(2,0), // tenant name
+r.getString(3,0), // groupName: String,
+r.getString(4,0), // subgroupName: String,
+r.getString(5,0), // eventType: String,
+r.getString(6,0), // eventSource: String,
+r.getString(7,0), // deviceTypeName: String,
+attributes.toMap, // attributes map
+r.getString(9,0) // event: String
+)
+}
+ 
+def readParquet(parquetFile: File,
+                // configuration: Configuration,
+                output: MutableList[ArrayentRecord]) = {
+     val parquetFilePath = new Path(parquetFile.toURI())
+     val readSupport = new GroupReadSupport()
+     val configuration = new Configuration(true)
+     val readFooter = ParquetFileReader.readFooter(configuration, parquetFilePath)
+     val schema = readFooter.getFileMetaData.getSchema
+     
+     readSupport.init(configuration, null, schema)
+     val reader = new ParquetReader[Group](parquetFilePath, readSupport)
+     try {
+       var g: Group = null
+       var done = false
+       while (!done) {
+         g = reader.read()
+         if (g == null) done = true
+         else output += convertGroup(g)
+       }
+     } finally {
+       closeQuietly(reader)
+     }
+   }
+ 
+def writeParquet(zip: ZipInputStream, buffer: Array[Byte], bufferSize:Int): File = {
+    val tempFile: File = File.createTempFile("testZip", ".parquet")
+    val fileOutFile: FileOutputStream = new FileOutputStream(tempFile)
+   
+    val bos = new ByteArrayOutputStream()
+ 
+     try {
+       var b = 1
+       while (b>0) {
+           b = zip.read(buffer, 0, bufferSize)
+           if ( b > 0 ) bos.write( buffer, 0, b )
+       }
+         fileOutFile.write(bos.toByteArray())
+     } finally {
+         closeQuietly(fileOutFile)
+     }
+    tempFile
+}
+    
+def processAZip(content: PortableDataStream) : MutableList[ArrayentRecord] = {
+    val output: MutableList[ArrayentRecord] = MutableList()
+    val zip = new ZipInputStream(content.open)
+    // create a big enough buffer
+    val bufferSize = 64 * 1024
+    val buffer = new Array[Byte](bufferSize)
+   
+    var done = false
+    while (!done) {
+    val zipe = zip.getNextEntry
+    if (zipe == null) done = true
+    else {
+        val tempFile = writeParquet(zip, buffer, bufferSize)
+        readParquet(tempFile, output)
+        //readParquet(tempFile, spark.sparkContext.hadoopConfiguration, output)
+        tempFile.delete()
+        }
+    }
+   
+    output // return the entire list of records from this ZIP
+}
+}
+ 
+ 
+import org.apache.hadoop.fs._
+import java.util.Calendar
+import java.util.GregorianCalendar
+import java.net.URI
+ 
+val pieces=1
+val year=2016
+val month=9
+val dayFrom=1
+val dayTo=30
+val debugOnly = false
+ 
+val tableName = "raw"
+val kpiTableName = "kpi"
+val arrayent  = "wasb://arrayent@inoltfysta01.blob.core.windows.net/"
+ 
+// start of FUNCTIONS block (preferably add this in a Utils package / to be directly usable)
+def toDayOfWeek(dw:Int):Int = {
+    if (dw==1) 7
+    else dw-1
+}
+def toXX(i:Int):String = {
+    if (i<10) "0" + i
+    else "" + i
+}
+def dropPartition(tableName:String, year:Int, month:Int, day:Int): String = {
+    f"ALTER TABLE $tableName DROP IF EXISTS PARTITION (year=$year, month=$month, day=$day)"
+}
+def addPartition(tableName:String, year:Int, month:Int, day:Int): String = {
+    val m2=toXX(month)
+    val d2=toXX(day)
+    f"ALTER TABLE $tableName ADD PARTITION (year=$year, month=$month, day=$day) location '$year/$m2/$d2'"
+}
+ 
+def listFiles(year:Int, month:Int, day:Int) = {
+ 
+val fs = FileSystem.get(new URI(arrayent), spark.sparkContext.hadoopConfiguration)
+val ap = new Path(arrayent)
+val status = fs.listStatus(ap)
+ 
+val files = status.map(x => x.getPath.toString)
+val zipfiles = files.filter(_.endsWith("zip"))
+val parquetfiles = files.filter(_.endsWith("parquet"))
+println(files.size + " files, " + zipfiles.size + " zips, " + parquetfiles.size + " parquet")
+ 
+// take care month is 0-based (so subtract 1)!
+val c = new GregorianCalendar(year,month-1,day)
+ 
+// check if it might be a good idea to
+// subtract X hours from fromTS
+// and add X hours to toTS and obtain a bigger time range (to be safe)
+val fromTS = c.getTimeInMillis
+c.add(Calendar.DAY_OF_MONTH, 1)
+val toTS = c.getTimeInMillis
+ 
+println("Filtering all ZIP files with timestamp between " + fromTS + " and " + toTS)
+println("Filtered ZIP files")
+val dayFiles = zipfiles.filter(name => {
+    val ts = name.split("-")(3).split("\\.")(0).toLong
+    val condition = (ts >= fromTS) && (ts < toTS)
+    condition
+})
+  
+    dayFiles
+}
+// end of FUNCTIONS block
+ 
+// This is the actual processing done per each day for ZIP files!
+for (day <- dayFrom to dayTo) {
+println(f"Processing RAW ZIP files data for $day/$month/$year")
+ 
+val output="wasb:///example/raw/" + year + "/" + toXX(month) + "/" + toXX(day) + "/"
+  
+val dayFiles = listFiles(year, month,day)
+println("Daily files: " + dayFiles.size)
+ 
+var allZIPs =  spark.sparkContext.emptyRDD[(String, org.apache.spark.input.PortableDataStream)]
+ 
+for (i <- 0 to dayFiles.size-1) {
+val zipFile = spark.sparkContext.binaryFiles(dayFiles(i))
+if (i==0) allZIPs = zipFile
+else allZIPs = allZIPs.union(zipFile)
+}
+ 
+val allContent = allZIPs.map{ case (name: String, content: PortableDataStream) => content}
+val allAsArrays = allContent.map(content => ZIPFilesUtil.processAZip(content).toArray)
+val data = allAsArrays.flatMap(_.toList).toDF()
+ 
+// to speed things up (KPI needs this DF again)
+data.persist()
+   
+if (!debugOnly) {
+// maybe here we need to repartition the data in manageable sized parquet files
+    data.repartition(pieces).write.mode("overwrite").parquet(output)
+    spark.sql(dropPartition(tableName, year, month,day))
+    spark.sql(addPartition(tableName, year, month,day))  
+} 
+    
+// take care of KPIs for this day
+ 
+// drop existing (if any) KPI partition values
+spark.sql(dropPartition(kpiTableName, year, month,day))
+// allow dynamic partition create
+spark.sql("set hive.exec.dynamic.partition.mode=nonstrict") 
+spark.sql("set spark.sql.shuffle.partitions="+pieces)
+ 
+var kpis = Map("Rows" -> data.count,
+            //"Total files" -> files.size,
+            "Input files" -> dayFiles.size,
+            "ZIP input files" -> dayFiles.size
+           )
+   
+kpis.foreach({
+    case (k,v) =>
+    spark.sql(f"insert into $kpiTableName values ('$k','$v', $year, $month, $day)")
+})
+   
+// not needed anymore
+data.unpersist()
+}
