@@ -1,0 +1,9 @@
+//Hi This is a test document for deploying directly from GIT to Azure
+
+A simple Hello Scala program is written below:-
+
+object HelloWorld {
+  def main(args: Array[String]): Unit = {
+    println("Hello, world!")
+  }
+}
