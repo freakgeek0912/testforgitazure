@@ -1,0 +1,19 @@
+{
+	"name": "DestinationDataset_o32",
+	"properties": {
+		"linkedServiceName": {
+			"referenceName": "AzureBlobStorage001",
+			"type": "LinkedServiceReference"
+		},
+		"annotations": [],
+		"type": "Binary",
+		"typeProperties": {
+			"location": {
+				"type": "AzureBlobStorageLocation",
+				"fileName": "outlookdemo",
+				"container": "blb-strg-001"
+			}
+		},
+		"schema": []
+	}
+}
