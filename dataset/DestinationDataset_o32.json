@@ -9,9 +9,7 @@
 		"type": "Binary",
 		"typeProperties": {
 			"location": {
-				"type": "AzureBlobStorageLocation",
-				"fileName": "outlookdemo",
-				"container": "blb-strg-001"
+				"type": "AzureBlobStorageLocation"
 			}
 		},
 		"schema": []
